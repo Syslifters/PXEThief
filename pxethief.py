@@ -25,7 +25,6 @@ import sys
 import datetime
 from os import walk,system
 from ipaddress import IPv4Network,IPv4Address
-from certipy.lib.certificate import load_pfx
 from sccmwtf import SCCMTools, Tools, CryptoTools, policyBody, msgHeaderPolicy, msgHeader, dateFormat1
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.serialization import pkcs12
@@ -687,7 +686,7 @@ def dowload_and_decrypt_policies_using_certificate(guid,cert_bytes):
     CCMClientID = smsMediaGuid
     smsTSMediaPFX = binascii.unhexlify(cert_bytes)
 
-    key, cert = load_pfx(smsTSMediaPFX, smsMediaGuid[:31].encode())
+    key, cert, _ = pkcs12.load_key_and_certificates(smsTSMediaPFX, smsMediaGuid[:31].encode(), default_backend())
     print('[+] Generating Client Authentication headers using PFX File...')
 
     data = CCMClientID.encode("utf-16-le") + b'\x00\x00'
