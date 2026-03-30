@@ -330,8 +330,13 @@ def get_variable_file_path(tftp_server, arch=None):
                 variables_file = variables_file.decode('utf-8')
             bcd_file = next(opt[1] for opt in dhcp_options if isinstance(opt, tuple) and opt[0] == 252).rstrip(b"\0").decode("utf-8")  # DHCP option 252 is used by SCCM to send the BCD file location
         else:
-            print("[-] No variable file location (DHCP option 243) found in response for %s" % arch['name']) 
-            return None
+            try:
+                bcd_file = next(opt[1] for opt in dhcp_options if isinstance(opt, tuple) and opt[0] == 252).rstrip(b"\0").decode("utf-8")
+                variables_file = bcd_file.rsplit(".", 1)[0] + ".var"
+                print("[+] Option 243 not found, derived variables file path from BCD (option 252): " + variables_file)
+            except StopIteration:
+                print("[-] No variable file location (DHCP option 243) or BCD path (option 252) found in response for %s" % arch['name'])
+                return None
     else:
         print("[-] No DHCP response from MECM server %s for %s" % (tftp_server, arch['name'])) 
         return None
