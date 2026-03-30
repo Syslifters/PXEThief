@@ -182,7 +182,7 @@ class SCCMTools():
                 if part is not None and part.headers[b'content-type'] == b'application/octet-stream':
                     try:
                         decompressed = zlib.decompress(part.content).decode('utf-16')
-                        result = re.search("PolicyCategory=\"NAAConfig\".*?<!\[CDATA\[https*://<mp>([^]]+)", decompressed, re.DOTALL + re.MULTILINE)
+                        result = re.search(r"PolicyCategory=\"NAAConfig\".*?<!\[CDATA\[https*://<mp>([^]]+)", decompressed, re.DOTALL + re.MULTILINE)
                         if result:
 
                             return r
@@ -285,7 +285,7 @@ class SCCMTools():
         with open (f"{self.logs_dir}/{uuid}.data", "wb") as f:
             f.write(data)
         deflatedData = self.sendCCMPostRequest(data)
-        result = re.search("PolicyCategory=\"NAAConfig\".*?<!\[CDATA\[https*://<mp>([^]]+)", deflatedData, re.DOTALL + re.MULTILINE)
+        result = re.search(r"PolicyCategory=\"NAAConfig\".*?<!\[CDATA\[https*://<mp>([^]]+)", deflatedData, re.DOTALL + re.MULTILINE)
         return [result.group(1)]
 
 
