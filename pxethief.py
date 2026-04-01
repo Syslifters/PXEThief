@@ -563,9 +563,19 @@ def process_pxe_bootable_and_prestaged_media(media_xml):
         SMSTSMP = root.find('.//var[@name="SMSTSMP"]')
         SMSTSLocationMPs = root.find('.//var[@name="SMSTSLocationMPs"]')
         if SMSTSMP is not None:
-            SCCM_BASE_URL = SMSTSMP.text
+            mp_raw = SMSTSMP.text
         elif SMSTSLocationMPs is not None:
-            SCCM_BASE_URL = SMSTSLocationMPs.text
+            mp_raw = SMSTSLocationMPs.text
+        else:
+            mp_raw = ""
+
+        # MP field can contain multiple URLs delimited by '*' — use the first one
+        mp_urls = [u.strip() for u in mp_raw.split('*') if u.strip()]
+        if mp_urls:
+            SCCM_BASE_URL = mp_urls[0]
+            if len(mp_urls) > 1:
+                print("[+] Multiple Management Point URLs found: " + ", ".join(mp_urls))
+                print("[+] Using first MP URL. If it fails, set SCCM_BASE_URL in settings.ini to one of the alternatives")
         
         print("[+] Management Point URL set to: " + SCCM_BASE_URL)
     else:
